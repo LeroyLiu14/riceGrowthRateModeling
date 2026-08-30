@@ -1,0 +1,65 @@
+name: Temporary Threads public research
+on:
+  push:
+    paths: ['.github/workflows/temporary-threads-research-20260830.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+      - name: Install Threads CLI
+        run: go install github.com/tamnd/threads-cli/cmd/th@latest
+      - name: Collect public Threads data
+        shell: bash
+        run: |
+          set -u
+          TH="$(go env GOPATH)/bin/th"
+          mkdir -p results/search results/profiles results/threads results/logs
+          "$TH" whoami > results/whoami.txt 2>&1 || true
+          SHARE='https://www.threads.com/share/_tN5YJbJg/'
+          RESOLVED=$(curl -L --max-time 30 -sS -A 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' -o /dev/null -w '%{url_effective}' "$SHARE" || true)
+          printf '%s\n' "$RESOLVED" > results/resolved_share_url.txt
+          if [[ "$RESOLVED" == *'/post/'* ]]; then "$TH" post "$RESOLVED" --replies -n 0 -o jsonl > results/threads/share.jsonl 2>results/logs/share.err || true; fi
+          queries=('動物王國大探險展' '動物王國大探險' '科教館 動物王國' '翡冷翠 動物王國' '簡體字 動物王國' '中國商品 動物王國' 'AI投影 動物王國' '布娃娃 動物王國' '450元 動物王國' '恐龍奇遇記 動物王國' '還沒買票的家長請三思' '一堆都是中國商品' '爛到不想拍照的展覽' '值不值得 動物王國')
+          i=0
+          for q in "${queries[@]}"; do i=$((i+1)); s=$(printf '%02d' "$i"); printf '%s\n' "$q" > results/search/$s.query.txt; "$TH" search "$q" -n 200 -o jsonl > results/search/$s.jsonl 2>results/logs/search_$s.err || true; sleep 1; done
+          for h in daisybear731 chloebesideyou arielinsterest gogo750423 tinalin31; do "$TH" profile "$h" --posts -n 150 -o jsonl > results/profiles/$h.jsonl 2>results/logs/profile_$h.err || true; sleep 1; done
+          python3 - <<'PY'
+          import glob,json,re
+          from pathlib import Path
+          root=Path('results'); rec={}; kw=re.compile(r'動物王國|科教館|翡冷翠|比薩|簡體|中國商品|AI\s*投影|布娃娃|玩具大象|450\s*元|恐龍奇遇記|還沒買票|不想拍照|值不值得')
+          for p in glob.glob('results/search/*.jsonl')+glob.glob('results/profiles/*.jsonl'):
+            for line in open(p,encoding='utf-8',errors='replace'):
+              try:o=json.loads(line)
+              except:continue
+              text=str(o.get('text') or o.get('caption') or o.get('excerpt') or ''); user=str(o.get('username') or o.get('handle') or '')
+              if kw.search(text) or user.lower() in {'daisybear731','chloebesideyou','arielinsterest','gogo750423','tinalin31'}:
+                key=str(o.get('permalink') or o.get('url') or o.get('id') or len(rec)); o['_source_file']=p; rec[key]=o
+          with open(root/'matched_posts.jsonl','w',encoding='utf-8') as f:
+            for o in rec.values(): f.write(json.dumps(o,ensure_ascii=False)+'\n')
+          urls=sorted({str(o.get('permalink') or o.get('url') or '').split('?')[0] for o in rec.values() if '/post/' in str(o.get('permalink') or o.get('url') or '')})
+          (root/'candidate_urls.txt').write_text('\n'.join(urls),encoding='utf-8')
+          print('matched',len(rec),'urls',len(urls))
+          PY
+          n=0
+          while IFS= read -r url; do [[ -z "$url" ]] && continue; n=$((n+1)); [[ $n -gt 80 ]] && break; s=$(printf '%03d' "$n"); printf '%s\n' "$url" > results/threads/$s.url.txt; "$TH" post "$url" --replies -n 0 -o jsonl > results/threads/$s.jsonl 2>results/logs/thread_$s.err || true; sleep 1; done < results/candidate_urls.txt
+          python3 - <<'PY'
+          import glob,json
+          from pathlib import Path
+          r=Path('results')
+          def cnt(pat): return sum(sum(1 for x in open(p,encoding='utf-8',errors='replace') if x.strip()) for p in glob.glob(pat))
+          s={'resolved_share_url':(r/'resolved_share_url.txt').read_text().strip(),'search_records':cnt('results/search/*.jsonl'),'profile_records':cnt('results/profiles/*.jsonl'),'matched_posts':cnt('results/matched_posts.jsonl'),'post_reply_records':cnt('results/threads/*.jsonl')}
+          (r/'summary.json').write_text(json.dumps(s,ensure_ascii=False,indent=2),encoding='utf-8'); print(json.dumps(s,ensure_ascii=False))
+          PY
+          echo SUMMARY; cat results/summary.json; echo MATCHED; head -n 40 results/matched_posts.jsonl || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: threads-public-research-20260830
+          path: results/
+          retention-days: 3
