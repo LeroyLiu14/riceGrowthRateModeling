@@ -1,0 +1,86 @@
+name: Run TabICLv2 deidentified pig models
+
+on:
+  push:
+    branches:
+      - 'tabiclv2-public-run-*'
+    paths:
+      - 'tabiclv2_public_run/**'
+      - '.github/workflows/tabiclv2_public_execute.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '2'
+  MKL_NUM_THREADS: '2'
+  TOKENIZERS_PARALLELISM: 'false'
+  HF_HUB_DISABLE_TELEMETRY: '1'
+  INPUT_DOWNLOAD_URL: 'https://sdmntprjapaneast.oaiusercontent.com/files/00000000-dbac-8209-b15c-5b4eb75f296e/raw?se=2026-09-29T15%3A33%3A28Z&sp=r&sv=2026-02-06&sr=b&scid=4a447238-012a-5f31-8ecb-1395af54db30&skoid=fe2e0858-51c5-47e9-acb7-46ebb9a0f396&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-29T04%3A00%3A07Z&ske=2026-09-30T04%3A00%3A07Z&sks=b&skv=2026-02-06&sig=UJ5SMYSblhrp0NAkDx%2BbP0deXmJnQwBNX99lnTRePDk%3D'
+
+jobs:
+  run-tabiclv2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Download deidentified analysis matrix
+        shell: bash
+        run: |
+          mkdir -p tabiclv2_public_run
+          curl --fail --location --retry 5 --retry-delay 2 "$INPUT_DOWNLOAD_URL" -o tabiclv2_public_run/inputs.zip
+          echo '3ffdcc6fc3d31212d4a9e568e295d4ad9f2e77b7db540e40ef274e944b893b86  tabiclv2_public_run/inputs.zip' | sha256sum -c -
+          unzip -t tabiclv2_public_run/inputs.zip
+
+      - name: Install CPU runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'tabicl==2.2.0' 'pandas>=2.2' 'numpy>=1.26' 'scikit-learn>=1.5' 'scipy>=1.11'
+
+      - name: Environment check
+        run: |
+          python - <<'PY'
+          import tabicl, torch
+          print('tabicl', getattr(tabicl, '__version__', 'unknown'))
+          print('torch', torch.__version__, 'cuda', torch.cuda.is_available())
+          PY
+
+      - name: Run TabICLv2 grouped CV and chronological test
+        run: |
+          python tabiclv2_public_run/runner.py \
+            --input-zip tabiclv2_public_run/inputs.zip \
+            --work-dir tabiclv2_public_run/inputs \
+            --output-dir tabiclv2_public_run/results \
+            --datasets B0_出生基準 D0_70日齡基準 D1_70日齡核心氣象 D2_70日齡完整氣象 \
+            --tasks classification regression \
+            --n-estimators 1 \
+            --batch-size 1 \
+            --n-jobs 2 \
+            --cv-folds 5 \
+            --device cpu
+
+      - name: Bundle results
+        if: always()
+        run: |
+          cd tabiclv2_public_run
+          zip -r tabiclv2_results_bundle.zip results || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tabiclv2-pig-weather-results
+          path: |
+            tabiclv2_public_run/tabiclv2_results_bundle.zip
+            tabiclv2_public_run/results
+          if-no-files-found: warn
+          retention-days: 7
